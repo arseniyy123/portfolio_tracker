@@ -1,4 +1,3 @@
-# File: ticker_service.py
 import os
 import json
 import yfinance as yf
@@ -7,11 +6,34 @@ import aiohttp
 import pandas as pd
 from datetime import datetime
 import asyncio
+import sqlite3
 
 # Load or initialize caches
 TICKER_CACHE_FILE = 'ticker_cache.json'
 PRICE_CACHE_FILE = 'price_cache.json'
 USD_TO_EUR_CACHE_FILE = 'usd_to_eur_cache.json'
+
+
+def create_ticker_table(db_name):
+    conn = sqlite3.connect(db_name)
+    cursor = conn.cursor()
+
+    # Create a table for storing ticker information
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS tickers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product TEXT UNIQUE,
+            ticker_symbol TEXT,
+            date_added TEXT
+        )
+    ''')
+
+    conn.commit()
+    conn.close()
+
+
+# Call the function to create tickers table
+create_ticker_table("portfolio_performance.db")
 
 if os.path.exists(TICKER_CACHE_FILE):
     with open(TICKER_CACHE_FILE, 'r') as f:
@@ -31,9 +53,19 @@ if os.path.exists(USD_TO_EUR_CACHE_FILE):
 else:
     usd_to_eur_cache = {}
 
-async def get_ticker_symbol(product):
-    if product in ticker_cache:
-        return ticker_cache[product]
+async def get_ticker_symbol(product, db_path='stocks.db'):
+    # Connect to the database
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    # Check if the ticker exists in the database
+    cursor.execute("SELECT ticker FROM tickers WHERE product = ?", (product,))
+    result = cursor.fetchone()
+
+    if result:
+        ticker = result[0]
+        conn.close()
+        return ticker
 
     url = f"https://query1.finance.yahoo.com/v1/finance/search?q={product}"
     async with aiohttp.ClientSession() as session:
@@ -43,10 +75,14 @@ async def get_ticker_symbol(product):
                 quotes = data.get('quotes', [])
                 if quotes:
                     ticker = quotes[0]['symbol']
-                    ticker_cache[product] = ticker
-                    # Save cache to disk (consider batching disk writes)
-                    with open(TICKER_CACHE_FILE, 'w') as f:
-                        json.dump(ticker_cache, f)
+                    if ticker:
+                        # Insert ticker into the database
+                        cursor.execute('''
+                            INSERT INTO tickers (product, ticker, date_added)
+                            VALUES (?, ?, ?)
+                        ''', (product, ticker, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                        conn.commit()
+                    conn.close()
                     return ticker
     return ''
 
@@ -59,7 +95,7 @@ async def get_current_price(product, currency='USD'):
         return price_cache[product]['price']
 
     # Get the current price using yfinance
-    product = product.lower().replace('adr on ', '').replace('class c', '').replace('class a', '').replace('class b', '').replace('.com', '')
+    product = product.lower().replace('adr on ', '').replace('class c', '').replace('class a', '').replace('class b','').replace('.com', '')
     ticker = await get_ticker_symbol(product.strip())
     if not ticker:
         print(f"Warning: Could not find ticker for {product}")
@@ -136,6 +172,7 @@ async def get_current_prices(products, currency='USD'):
 
     return prices
 
+
 async def fetch_price_for_product(product, currency):
     # Fetch ticker symbol
     ticker = await get_ticker_symbol(product.lower().replace('adr on ', '').replace('class c', '').replace('class a', '').replace('class b', '').replace('.com', '').strip())
@@ -160,7 +197,29 @@ async def fetch_price_for_product(product, currency):
                 return product, None
             
 
-# TO BE IMPLIMENTED
+async def get_historical_prices(ticker, start_date, end_date):
+    # Use yfinance to get historical price data between start_date and end_date
+    ticker_data = yf.Ticker(ticker)
+    historical_data = ticker_data.history(start=start_date.strftime('%Y-%m-%d'), end=end_date.strftime('%Y-%m-%d'))
+    return historical_data
+
+
+def get_processed_tickers(products, db_name='stocks.db'):
+    conn = sqlite3.connect(db_name)
+    cursor = conn.cursor()
+    tickers = {}
+    for product in products:
+        cursor.execute('SELECT ticker FROM tickers WHERE product = ?', (product.lower(),))
+        result = cursor.fetchone()
+        if result:
+            print(f"Found ticker {result[0]} for {product}")
+            tickers[product] = result[0]
+        else:
+            tickers[product] = 'NA'
+    conn.close()
+    return tickers
+
+# TO BE IMPLEMENTED
 def save_caches():
     with open(TICKER_CACHE_FILE, 'w') as f:
         json.dump(ticker_cache, f)

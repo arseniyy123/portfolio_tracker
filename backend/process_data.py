@@ -1,11 +1,11 @@
 import pandas as pd
-import math
-import asyncio
-from ticker_service import get_current_price, get_current_prices
+from ticker_service import get_processed_tickers, get_ticker_symbol
+from stock_service import update_stock_data_table, calculate_total_daily_profit_loss
 import cProfile
 import pstats
 import io
 from datetime import datetime
+import holidays
 
 
 def clean_currency(value):
@@ -19,6 +19,7 @@ def clean_currency(value):
             return 0
     return float(value)
 
+
 def parse_transaction_description(description, currency, tipo):
     # Example description: "Compra 2 Visa Inc@278,5 USD"
     description_parts = description.split('@')
@@ -28,80 +29,79 @@ def parse_transaction_description(description, currency, tipo):
         price = price / tipo  # Convert USD to EUR
     return quantity, price
 
+
 async def calculate_profits_async(df):
     df = df[~df['ID Orden'].isna()]
     df = df[['Fecha', 'Producto', 'Descripción', 'Tipo', 'Variación', 'Saldo']]
     df_eur = df[df['Variación'] == 'EUR']
     df_usd = df[df['Variación'] == 'USD'].copy()
-    df_usd.loc[:, 'Tipo'] = df_usd['Tipo'].fillna(method='ffill')
+    df_usd.loc[:, 'Tipo'] = df_usd['Tipo'].ffill()
     df = pd.concat([df_eur, df_usd])
 
-    # Initialize positions dictionary
+    # Initialize positions dictionary to track stocks and their purchase data
     positions = {}
-    profit_loss = 0.0
-    profit_loss_breakdown = {}
 
-    # Iterate over transactions
+    # Iterate over transactions to build positions and get tickers
     for _, row in df[::-1].iterrows():
         product = row['Producto']
         description = row['Descripción']
         currency = row['Variación']
+        date = datetime.strptime(row['Fecha'], '%d-%m-%Y')
 
         if 'Compra' in description:
             # Buying shares
             quantity, price = parse_transaction_description(description, currency, row['Tipo'])
             if product not in positions:
                 positions[product] = []
-            positions[product].append({'quantity': quantity, 'cost_per_unit': math.ceil(price*100)/100})
+            positions[product].append(
+                {'currency': currency, 'quantity': quantity, 'cost_per_unit': price, 'start_date': date,
+                 'end_date': None})
 
         elif 'Venta' in description:
             # Selling shares
             quantity, price = parse_transaction_description(description, currency, row['Tipo'])
             if product in positions:
+                lot_num = 0
                 remaining_quantity = quantity
-                while remaining_quantity > 0 and positions[product]:
-                    lot = positions[product][0]
+                while remaining_quantity > 0:
+                    lot = positions[product][lot_num]
                     if lot['quantity'] <= remaining_quantity:
-                        profit_loss += (price - lot['cost_per_unit']) * lot['quantity']
-                        if product not in profit_loss_breakdown:
-                            profit_loss_breakdown[product] = []
-                        profit_loss_breakdown[product].append({
-                            'quantity': lot['quantity'],
-                            'profit_per_unit': price - lot['cost_per_unit']
-                        })
                         remaining_quantity -= lot['quantity']
-                        positions[product].pop(0)
+                        lot['end_date'] = date
+                        # positions[product].pop(0)
                     else:
-                        profit_loss += (price - lot['cost_per_unit']) * remaining_quantity
-                        if product not in profit_loss_breakdown:
-                            profit_loss_breakdown[product] = []
-                        profit_loss_breakdown[product].append({
-                            'quantity': remaining_quantity,
-                            'profit_per_unit': price - lot['cost_per_unit']
-                        })
                         lot['quantity'] -= remaining_quantity
+                        lot['end_date'] = date
                         remaining_quantity = 0
+                    lot_num += 1
+    # Get already processed tickers
+    products_to_fetch = get_processed_tickers(positions.keys())
 
-    products_to_fetch = [product for product, lots in positions.items() if lots]
+    # Get tickers for products that are not already processed
+    for product, value in products_to_fetch.items():
+        if value == 'NA':
+            products_to_fetch[product] = await get_ticker_symbol(
+                product.lower().replace('adr on ', '').replace('class c', '').replace('class a', '').replace(
+                    'class b', '').replace('.com', '').strip())
 
-    # Fetch all current prices concurrently
-    current_prices = await get_current_prices(products_to_fetch, 'EUR')
-    current_prices = {product.lower(): price for product, price in current_prices.items()}
-    
-    # Calculate ongoing positions profit/loss
-    for product, lots in positions.items():
-        if lots:
-            current_price = current_prices.get(product.lower(), 0.0)
-            for lot in lots:
-                profit_loss += (current_price - lot['cost_per_unit']) * lot['quantity']
-                if product not in profit_loss_breakdown:
-                    profit_loss_breakdown[product] = []
-                profit_loss_breakdown[product].append({
-                    'quantity': lot['quantity'],
-                    'profit_per_unit': current_price - lot['cost_per_unit']
-                })
+    # Update stock data table with new data
+    update_stock_data_table(products_to_fetch.values())
 
-    return round(profit_loss, 2), profit_loss_breakdown
+    # daily_profits = calculate_daily_profit_loss(positions, products_to_fetch)
+    # Get overall daily profit/loss
+    overall_daily_profits = calculate_total_daily_profit_loss(positions, products_to_fetch)
+
+    us_holidays = holidays.US(years=range(2010, 2030))
+    filtered_data = {
+        date: round(value, 2)
+        for date, value in overall_daily_profits.items()
+        if date.weekday() < 5  # Exclude weekends
+           and date not in us_holidays  # Exclude US public holidays
+    }
+
+    filtered_data = pd.DataFrame(list(filtered_data.items()), columns=['date', 'value'])
+
+    return filtered_data
 
 async def calculate_metrics_async(account_df: pd.DataFrame, portfolio_df: pd.DataFrame) -> dict:
     profiler = cProfile.Profile()
@@ -135,7 +135,7 @@ async def calculate_metrics_async(account_df: pd.DataFrame, portfolio_df: pd.Dat
     relevant_df_eur = relevant_df_eur[~relevant_df_eur['Producto'].isna()]
 
     relevant_df_usd = relevant_df[relevant_df['Saldo'] == 'USD'].copy()
-    relevant_df_usd.loc[:, 'Tipo'] = relevant_df_usd['Tipo'].fillna(method='ffill')
+    relevant_df_usd.loc[:, 'Tipo'] = relevant_df_usd['Tipo'].ffill()
 
     # Create a new DataFrame to store the calculated results
     result_df = []
@@ -227,42 +227,82 @@ async def calculate_metrics_async(account_df: pd.DataFrame, portfolio_df: pd.Dat
     total_fees = round(fees[amount_column].sum(), 2)
 
     # Step 3: Profit/Loss Calculation for Each Company Using Account Data
-    profit_loss, profit_loss_breakdown = await calculate_profits_async(account_df)
+    #profit_loss, profit_loss_breakdown = await calculate_profits_async(account_df)
+    historical_portfolio_value = await calculate_profits_async(account_df)
+    profit_loss = round(float(historical_portfolio_value['value'].iloc[-1]), 2)
 
-    # Step 4: Portfolio Balance and Cash Calculation using 
-    portfolio_df['Valor en EUR'] = portfolio_df['Valor en EUR'].apply(lambda x: float(x.replace(',', '.')))
+    # Step 4: Portfolio Balance and Cash Calculation using
+    portfolio_df['Valor en EUR'] = pd.to_numeric(portfolio_df['Valor en EUR'].str.replace(',', '.'), errors='coerce')
     cash = portfolio_df[portfolio_df['Producto'].str.contains("cash", case = False, na=False)]['Valor en EUR'].sum()
     portfolio_value = round(portfolio_df['Valor en EUR'].sum() - cash, 2)
 
     # Step 5: Returns
     account_df = account_df[account_df['Fecha'].notna()]
-    historical_portfolio_value = []  # Generate time-series data for portfolio value
     historical_cashflow = []  # Generate time-series data for cash flow
 
     # Calculate cumulative cash flow over time
-    cumulative_cashflow = 0
-    for _, row in account_df[::-1].iterrows():
-        try:
-            if row['Variación'] == 'EUR':
-                cumulative_cashflow += row['Unnamed: 8']
-            historical_cashflow.append({
-                'date': str(datetime.strptime(row['Fecha'], '%d-%m-%Y')),
-                'value': cumulative_cashflow
-            })
-        except Exception as e:
-            print(f"Unable to parse date: {row['Fecha']}, error: {e}")
 
-    historical_portfolio_value = historical_cashflow
-        
+    cumulative_cashflow = account_df[account_df['Variación'] == 'EUR'][amount_column][::-1].cumsum()
+    historical_cashflow = pd.DataFrame({
+        'date': account_df['Fecha'][::-1],
+        'value': cumulative_cashflow
+    }).ffill()
 
+    # cumulative_cashflow = 0
+    # for _, row in account_df[::-1].iterrows():
+    #     try:
+    #         if row['Variación'] == 'EUR':
+    #             cumulative_cashflow += row['Unnamed: 8']
+    #         historical_cashflow.append({
+    #             'date': row['Fecha'],
+    #             'value': cumulative_cashflow
+    #         })
+    #     except Exception as e:
+    #         print(f"Unable to parse date: {row['Fecha']}, error: {e}")
+    #
+    # historical_cashflow = pd.DataFrame(historical_cashflow)
+    historical_cashflow['value'] = historical_cashflow['value'].round(2)
+
+    historical_portfolio_value['date'] = historical_portfolio_value['date'].dt.strftime('%Y-%m-%d')
+
+    # Convert 'date' column to datetime format
+    historical_cashflow['date'] = pd.to_datetime(historical_cashflow['date'], format='%d-%m-%Y')
+    # Remove duplicate dates by keeping the last occurrence
+    historical_cashflow = historical_cashflow.drop_duplicates(subset='date', keep='last')
+    # Create a complete date range and reindex the DataFrame to fill missing dates
+    all_dates = pd.date_range(historical_cashflow['date'].min(), historical_portfolio_value['date'].max(), freq='D')
+    historical_cashflow = historical_cashflow.set_index('date').reindex(all_dates).ffill().bfill().reset_index()
+    historical_cashflow.columns = ['date', 'value']
+    # convert date in string Year Month Day format
+    historical_cashflow['date'] = historical_cashflow['date'].dt.strftime('%Y-%m-%d')
+
+    historical_portfolio_value['date'] = pd.to_datetime(historical_portfolio_value['date'], format='%Y-%m-%d')
+    historical_portfolio_value = historical_portfolio_value.drop_duplicates(subset='date', keep='last')
+    historical_portfolio_value = historical_portfolio_value.set_index('date').reindex(all_dates).ffill().bfill().reset_index().rename(columns={'index': 'date'})
+    historical_portfolio_value['date'] = historical_portfolio_value['date'].dt.strftime('%Y-%m-%d')
+
+    # Merge DataFrames on 'date'
+    merged_df = pd.merge(historical_cashflow, historical_portfolio_value, on='date', how='right').ffill()
+    merged_df.rename(columns={'value_x': 'cashflow_value', 'value_y': 'portfolio_value'}, inplace=True)
+
+    # Sum the 'value' fields
+    merged_df['value'] = merged_df['cashflow_value'] + merged_df['portfolio_value']
+
+    combined_data = merged_df[['date', 'value']].copy()
+
+    combined_data['value'] = pd.to_numeric(combined_data['value'], errors='coerce')
+    combined_data['value'] = combined_data['value'].round(2)
+    historical_portfolio_value['value'] = pd.to_numeric(historical_portfolio_value['value'], errors='coerce')
+    historical_portfolio_value['value'] = historical_portfolio_value['value'].round(2)
+    historical_cashflow['value'] = pd.to_numeric(historical_cashflow['value'], errors='coerce')
+    historical_cashflow['value'] = historical_cashflow['value'].round(2)
+
+    combined_data = combined_data.to_dict(orient='records')
+    historical_portfolio_value = historical_portfolio_value.to_dict(orient='records')
+    historical_cashflow = historical_cashflow.to_dict(orient='records')
 
     # Calculate annual growth rate
-    initial_value = historical_portfolio_value[0]['value'] if historical_portfolio_value else 1
-    final_value = historical_portfolio_value[-1]['value'] if historical_portfolio_value else 1
-    number_of_years = (datetime.now() - min(account_df['Fecha'].apply(lambda x: datetime.strptime(x, '%d-%m-%Y')))).days / 365.25
-    annual_growth_rate = ((final_value / initial_value) ** (1 / number_of_years) - 1) * 100 if number_of_years > 0 else 0
-
-
+    annual_growth_rate = 0
     # Stop the profiler
     profiler.disable()
 
@@ -280,10 +320,11 @@ async def calculate_metrics_async(account_df: pd.DataFrame, portfolio_df: pd.Dat
         "total_fees": total_fees,
         "fee_breakdown": fee_summary,
         "profit_loss": profit_loss,
-        "profit_loss_breakdown": profit_loss_breakdown,
+        #"profit_loss_breakdown": profit_loss_breakdown,
         "portfolio_value": portfolio_value,
         "cash_balance": cash,
         "historical_portfolio_value": historical_portfolio_value,
         "historical_cashflow": historical_cashflow,
+        "combined_data": combined_data,
         "annual_growth_rate": round(annual_growth_rate, 2)
     }

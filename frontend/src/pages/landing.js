@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import axios from "axios";
 import { Line } from "react-chartjs-2";
 import { Chart, registerables } from "chart.js";
-import 'chartjs-adapter-date-fns'; // Import the date adapter
+import 'chartjs-adapter-date-fns';
 
 Chart.register(...registerables);
 
@@ -30,21 +30,36 @@ const LandingPage = () => {
       console.error("Error uploading files:", error);
     }
   };
-
+  console.log(metrics);
   useEffect(() => {
     if (metrics) {
-      // Prepare chart data only when metrics are available
       const chartData = {
         labels: metrics.historical_portfolio_value.map((data) => data.date) || [],
         datasets: [
           {
-            label: "Portfolio Value",
-            data: metrics.historical_portfolio_value.map((data) => data.value) || [],
-            fill: true, // To show the area under the line
-            tension: 0.4, // To smooth the line
+            label: "Added Funds",
+            data: metrics.historical_cashflow.map((data) => data.value) || [],
+            fill: false,  // Set fill to false to avoid hiding the line
+            tension: 0.4,
             borderColor: "#007bff",
-            backgroundColor: "rgba(0, 123, 255, 0.1)", // Light blue fill color
-            pointRadius: 0, // Remove data points to make it smoother
+            backgroundColor: "rgba(0, 123, 255, 0.1)",
+            pointRadius: 0,
+          },
+          {
+            label: "Profit & Loss",
+            data: metrics.historical_portfolio_value.map((data) => data.value) || [],
+            fill: false,
+            tension: 0.4,
+            borderColor: "red", // Red line for historical portfolio value
+            pointRadius: 0,
+          },
+          {
+            label: "Total Portfolio Value",
+            data: metrics.combined_data.map((data) => data.value) || [],
+            fill: true,
+            tension: 0.4,
+            borderColor: "black",
+            pointRadius: 0,
           },
         ],
       };
@@ -96,37 +111,37 @@ const LandingPage = () => {
             {portfolioData && (
               <div style={{ width: "80%", height: "400px", margin: "auto" }}>
                 <Line
-                data={portfolioData}
-                options={{
-                  maintainAspectRatio: false,
-                  scales: {
-                    x: {
-                      type: 'time', // Time scale for X axis
-                      time: {
-                        unit: 'month', // Display data by month
-                        tooltipFormat: 'MMM yyyy', // Format for tooltips
+                  data={portfolioData}
+                  options={{
+                    maintainAspectRatio: false,
+                    scales: {
+                      x: {
+                        type: 'time',
+                        time: {
+                          unit: 'day',
+                          tooltipFormat: 'yyyy MMM dd',
+                        },
+                        title: {
+                          display: true,
+                          text: 'Date',
+                        },
                       },
-                      title: {
+                      y: {
+                        title: {
+                          display: true,
+                          text: 'Value (€)',
+                        },
+                        beginAtZero: true,
+                      },
+                    },
+                    plugins: {
+                      legend: {
                         display: true,
-                        text: 'Date',
+                        position: 'top',
                       },
                     },
-                    y: {
-                      title: {
-                        display: true,
-                        text: 'Value (€)',
-                      },
-                      beginAtZero: false,
-                    },
-                  },
-                  plugins: {
-                    legend: {
-                      display: true,
-                      position: 'top',
-                    },
-                  },
-                }}
-              />
+                  }}
+                />
               </div>
             )}
           </div>

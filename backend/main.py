@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 import io
 from process_data import calculate_metrics_async
+from db import create_tables
 
 app = FastAPI()
 
@@ -12,6 +13,9 @@ async def upload_files(account: UploadFile = File(...), portfolio: UploadFile = 
     # Read files into dataframes
     account_df = pd.read_csv(io.BytesIO(await account.read()))
     portfolio_df = pd.read_csv(io.BytesIO(await portfolio.read()))
+
+    # Start db
+    create_tables("stocks.db")
 
     # Call the calculation function
     metrics = await calculate_metrics_async(account_df, portfolio_df)

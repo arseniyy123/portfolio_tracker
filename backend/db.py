@@ -1,34 +1,46 @@
 import sqlite3
 
+# Database setup
 def create_tables(db_name):
-    # Connect to SQLite database (or create it if it doesn't exist)
     conn = sqlite3.connect(db_name)
     cursor = conn.cursor()
-    
-    # Create stocks table
+
+    # Create a table for storing ticker information
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS stocks (
+        CREATE TABLE IF NOT EXISTS tickers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ticker TEXT UNIQUE,
-            name TEXT
+            product TEXT,
+            ticker TEXT,
+            date_added TEXT
         )
     ''')
-    
-    # Create daily_prices table
+
+    # Create profit_loss table
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS daily_prices (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            stock_id INTEGER,
-            date TEXT,
-            open REAL,
-            high REAL,
-            low REAL,
-            close REAL,
-            volume INTEGER,
-            FOREIGN KEY (stock_id) REFERENCES stocks(id)
-        )
-    ''')
-    
+            CREATE TABLE IF NOT EXISTS eur_usd_exchange (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT UNIQUE,
+                exchange_rate REAL,
+                date_added TEXT
+            )
+        ''')
+
+    # Create stock_data table
+    cursor.execute('''
+            CREATE TABLE IF NOT EXISTS stock_data (
+                Date TEXT,
+                Ticker TEXT,
+                Open REAL,
+                High REAL,
+                Low REAL,
+                Close REAL,
+                Volume INTEGER,
+                Dividends REAL,
+                Stock_Splits REAL,
+                PRIMARY KEY (Date, Ticker)
+            )
+        ''')
+
     # Create portfolio table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS portfolio (
@@ -37,15 +49,20 @@ def create_tables(db_name):
             quantity REAL,
             purchase_date TEXT,
             purchase_price REAL,
-            FOREIGN KEY (stock_id) REFERENCES stocks(id)
+            FOREIGN KEY (stock_id) REFERENCES tickers(id)
         )
     ''')
-    
-    # Commit changes and close the connection
+
+    # Create profit_loss table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS profit_loss (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            stock_id INTEGER,
+            date TEXT,
+            profit_loss REAL,
+            FOREIGN KEY (stock_id) REFERENCES tickers(id)
+        )
+    ''')
+
     conn.commit()
     conn.close()
-
-# Example usage
-if __name__ == "__main__":
-    create_tables("portfolio_performance.db")
-    print("Tables created successfully in 'portfolio_performance.db'")
