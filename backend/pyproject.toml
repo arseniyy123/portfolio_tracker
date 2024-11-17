@@ -16,6 +16,7 @@ python-multipart = "^0.0.17"
 pip = "^24.3.1"
 nest-asyncio = "^1.6.0"
 holidays = "^0.60"
+pre-commit = "^4.0.1"
 
 [build-system]
 requires = ["poetry-core"]

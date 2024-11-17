@@ -8,8 +8,11 @@ from db import create_tables
 
 app = FastAPI()
 
+
 @app.post("/upload")
-async def upload_files(account: UploadFile = File(...), portfolio: UploadFile = File(...)):
+async def upload_files(
+    account: UploadFile = File(...), portfolio: UploadFile = File(...)
+):
     # Read files into dataframes
     account_df = pd.read_csv(io.BytesIO(await account.read()))
     portfolio_df = pd.read_csv(io.BytesIO(await portfolio.read()))
@@ -21,6 +24,7 @@ async def upload_files(account: UploadFile = File(...), portfolio: UploadFile = 
     metrics = await calculate_metrics_async(account_df, portfolio_df)
 
     return JSONResponse(content=metrics)
+
 
 app.add_middleware(
     CORSMiddleware,
