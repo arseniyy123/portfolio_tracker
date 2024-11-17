@@ -7,6 +7,8 @@ import io
 from datetime import datetime
 import holidays
 
+DEBUG = True
+
 
 def clean_currency(value):
     """Convert currency strings to numeric values."""
@@ -129,10 +131,12 @@ async def calculate_profits_async(df):
 
 
 async def calculate_metrics_async(
-    account_df: pd.DataFrame, portfolio_df: pd.DataFrame
+    account_df: pd.DataFrame,
+    portfolio_df: pd.DataFrame,
 ) -> dict:
-    profiler = cProfile.Profile()
-    profiler.enable()
+    if DEBUG:
+        profiler = cProfile.Profile()
+        profiler.enable()
 
     # Prepare necessary columns
     amount_column = "Unnamed: 8"  # Column containing amounts
@@ -303,15 +307,21 @@ async def calculate_metrics_async(
 
     # Step 5: Returns
     account_df = account_df[account_df["Fecha"].notna()]
-    historical_cashflow = []  # Generate time-series data for cash flow
 
     # Calculate cumulative cash flow over time
+    cashflow_df = account_df[
+        account_df["Descripción"].str.contains(
+            "flatex Deposit|Flatex Instant Deposit|Ingreso Sofort/Trustly",
+            case=False,
+            na=False,
+        )
+    ]
 
-    cumulative_cashflow = account_df[account_df["Variación"] == "EUR"][amount_column][
+    cumulative_cashflow = cashflow_df[cashflow_df["Variación"] == "EUR"][amount_column][
         ::-1
     ].cumsum()
     historical_cashflow = pd.DataFrame(
-        {"date": account_df["Fecha"][::-1], "value": cumulative_cashflow}
+        {"date": cashflow_df["Fecha"][::-1], "value": cumulative_cashflow}
     ).ffill()
 
     # cumulative_cashflow = 0
@@ -410,12 +420,12 @@ async def calculate_metrics_async(
     # Stop the profiler
     profiler.disable()
 
-    # Create a stream to capture the profiling stats
-    s = io.StringIO()
-    sortby = "cumtime"
-    ps = pstats.Stats(profiler, stream=s).sort_stats(sortby)
-    ps.print_stats(10)  # Limit output to top 10 functions
-    print(s.getvalue())
+    if DEBUG:
+        profiler.disable()
+        s = io.StringIO()
+        ps = pstats.Stats(profiler, stream=s).sort_stats("cumtime")
+        ps.print_stats(10)  # Limit output to the top 10 functions
+        print(s.getvalue())
 
     # Return results
     return {
